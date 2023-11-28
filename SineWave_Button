@@ -1,0 +1,104 @@
+#include <Bela.h>
+#include <libraries/Scope/Scope.h>
+#include <cmath>
+#include <libraries/Gui/Gui.h>      			
+
+// Browser-based GUI to adjust parameters
+Gui gui;
+
+const int gWavetableLength = 512;		// The length of the buffer in frames
+//float gWavetable[gWavetableLength];		// Buffer that holds the wavetable 
+float triangleWavetable[gWavetableLength];		// Buffer that holds the trianglewavetable
+float sineWavetable[gWavetableLength];		// Buffer that holds the sinewavetable
+float* currentTable = nullptr;
+float gReadPointer = 0;					// Position of the last frame we played 
+
+float gAmplitude = 0.2;					// Amplitude of the playback
+float gFrequency = 220.0;				// Frequency
+
+Scope gScope;
+
+bool setup(BelaContext *context, void *userData)
+{
+	// Generate a triangle waveform (ramp from -1 to 1, then 1 to -1)
+	for(unsigned int n = 0; n < gWavetableLength/2; n++) {
+		triangleWavetable[n] = -1.0 + 4.0 * (float)n / (float)gWavetableLength;
+	}
+	for(unsigned int n = gWavetableLength/2; n < gWavetableLength; n++) {
+		triangleWavetable[n] = 1.0 - 4.0 * (float)(n - gWavetableLength/2) / (float)gWavetableLength;
+	}
+	// Generate a sine waveform
+	for(unsigned int n = 0; n < gWavetableLength; n++) {
+		sineWavetable[n] = sin( 2 * M_PI * (float)n / (float)gWavetableLength);
+	}
+	
+	// Initialise the Bela oscilloscope
+	gScope.setup(1, context->audioSampleRate);
+	
+	// Set up the GUI
+	gui.setup(context->projectName);
+	
+	//Set the buffer to receive from the GUI
+	gui.setBuffer('f', 1);
+
+	return true;
+}
+
+void render(BelaContext *context, void *userData)
+{
+	//We store the DataBuffer in 'buffer'
+	DataBuffer& buffer = gui.getDataBuffer(0);
+	// Retrieve contents of the buffer as floats
+	float* data = buffer.getAsFloat();
+	//store element in local variable
+	float estado = data[0];
+	
+	/*switch((int)estado){
+		case 0: memcpy(gWavetable,sineWavetable,gWavetableLength);
+		break;
+		case 1: memcpy(gWavetable,triangleWavetable,gWavetableLength);
+		break;
+		default: estado=0;
+		break;
+	}*/
+	
+	if(estado == 1.0){
+		currentTable = sineWavetable;
+      // currentTable = &sineWavetable[0];
+	}
+	else {
+		currentTable = triangleWavetable;
+	}
+	for(unsigned int n = 0; n < context->audioFrames; n++) {
+    	//change float to int bc float doesnt make sense in a buffer
+    	int indexbelow = floorf(gReadPointer); //rounds a float downward
+    	int indexabove = indexbelow + 1;
+    	if (indexabove >= gWavetableLength)
+    		indexabove = 0;
+    	//linear interpolation x(n+f) = (1-f)*x[n] + f*x[n+1]
+    	float fractionAbove = gReadPointer - indexbelow;
+    	float fractionBelow = 1.0 - fractionAbove;
+    	float pos = fractionBelow * currentTable[indexbelow] + fractionAbove * currentTable[indexabove];
+    	
+    	// Load a sample from the buffer
+        float out = gAmplitude * pos;
+
+        // Increment read pointer and reset to 0 when end of table is reached
+        // TODO: update this code to handle different frequencies!
+        gReadPointer += gWavetableLength*gFrequency/context->audioSampleRate;
+        while(gReadPointer >= gWavetableLength) //while instead of if
+            gReadPointer -= gWavetableLength; //dont reset to 0
+    	for(unsigned int channel = 0; channel < context->audioOutChannels; channel++) {
+			// Write the sample to every audio output channel
+    		audioWrite(context, n, channel, out);
+    	}
+    	
+    	// Write the sample to the oscilloscope
+    	gScope.log(out);
+	}
+}
+
+void cleanup(BelaContext *context, void *userData)
+{
+
+}
