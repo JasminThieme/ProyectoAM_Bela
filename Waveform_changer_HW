@@ -1,0 +1,137 @@
+#include <Bela.h>
+#include <libraries/Scope/Scope.h>
+#include <cmath>
+#include <libraries/Gui/Gui.h>    
+#include <libraries/GuiController/GuiController.h>
+//#include <libraries/OnePole/OnePole.h>
+
+// Browser-based GUI to adjust parameters
+Gui gui;
+GuiController gGuiController;
+
+// One Pole filter object declaration
+//OnePole freqFilt;
+
+const int gWavetableLength = 512;			// The length of the buffer in frames
+float triangleWavetable[gWavetableLength];	// Buffer that holds the trianglewavetable
+float sineWavetable[gWavetableLength];		// Buffer that holds the sinewavetable
+float sawtoothWavetable[gWavetableLength];	// Buffer that holds the sawtooth wavetable
+float rectangularWavetable[gWavetableLength];
+float* currentTable = nullptr;				// Pointer to table
+float gReadPointer = 0;						// Position of the last frame we played 
+
+float gIn1, gIn2, gIn3;
+int gAudioFramesPerAnalogFrame = 2;
+float gFrequency, gAmplitude, outLed;
+
+Scope gScope;
+
+bool setup(BelaContext *context, void *userData)
+{
+	// Generate a triangle waveform (ramp from -1 to 1, then 1 to -1)
+	for(unsigned int n = 0; n < gWavetableLength/2; n++) {
+		triangleWavetable[n] = -1.0 + 4.0 * (float)n / (float)gWavetableLength;
+	}
+	for(unsigned int n = gWavetableLength/2; n < gWavetableLength; n++) {
+		triangleWavetable[n] = 1.0 - 4.0 * (float)(n - gWavetableLength/2) / (float)gWavetableLength;
+	}
+	// Generate a sine waveform
+	for(unsigned int n = 0; n < gWavetableLength; n++) {
+		sineWavetable[n] = sin( 2 * M_PI * (float)n / (float)gWavetableLength);
+	}
+	//Generate sawtooth waveform
+	for(unsigned int n = 0; n < gWavetableLength; n++) {
+		sawtoothWavetable[n] = -1.0 + 2.0 * (float)n / (float)(gWavetableLength - 1);
+	}
+	//Generate rectangular waveform
+	for(unsigned int n = 0; n < gWavetableLength/2; n++) {
+		rectangularWavetable[n] = -1.0;
+	}
+	for(unsigned int n = gWavetableLength/2; n < gWavetableLength; n++) {
+		rectangularWavetable[n] = 1.0;
+	}
+
+	// Check that we have the expected number of analog inputs and outputs
+	// because render() assumes half as many analog frames as audio frames
+	if(context->audioFrames != 2*context->analogFrames) {
+		rt_fprintf(stderr, "This project needs analog I/O running at half the audio rate.\n");
+		return false;
+	}
+	if(context->analogInChannels < 3) {
+		rt_fprintf(stderr, "This project needs at least 3 analog inputs.\n");
+		return false;
+	}
+	if(context->analogOutChannels == 0) {
+		rt_fprintf(stderr, "This project needs analog output to run.\n");
+		return false;
+	}
+
+	// Initialise the Bela oscilloscope
+	gScope.setup(1, context->audioSampleRate);
+
+	return true;
+}
+
+void render(BelaContext *context, void *userData)
+{
+	
+	for(unsigned int n = 0; n < context->audioFrames; n++) {
+		// read analog inputs and update frequency, amplitude and form
+		gIn1 = analogRead(context, n/gAudioFramesPerAnalogFrame, 0); //frequency
+		gIn2 = analogRead(context, n/gAudioFramesPerAnalogFrame, 1); //amplitude
+		gIn3 = analogRead(context, n/gAudioFramesPerAnalogFrame, 2); //waveform
+			
+		gFrequency = map(gIn1, 0, 1, 100, 1000);
+		//float gFrequency = 440 * powf(2, (pitch-69)/12); // compute the frequency based on the MIDI pitch
+		// Smooth frequency using low-pass filter
+        // ? gFrequency = freqFilt.process(frequency);
+		gAmplitude = map(gIn2, 0, 3.3 / 4.09, -40, -6);
+		float amplitude = powf(10, gAmplitude/20);
+		//Change waveform depending on positition of the potentiometer
+		if(gIn3 <= 0.25){
+			currentTable = sineWavetable;
+			outLed=0.25;
+	      // currentTable = &sineWavetable[0];
+		} else if (gIn3>0.25 && gIn3 <= 0.50) {
+			currentTable = triangleWavetable;
+			outLed=0.5;
+		} else if (gIn3>0.50 && gIn3 <= 0.75) {
+			currentTable = sawtoothWavetable;
+			outLed=0.75;
+		} else {
+			currentTable = rectangularWavetable;
+			outLed=1.0;
+		}
+		
+    	//change float to int bc float doesnt make sense in a buffer
+    	int indexbelow = floorf(gReadPointer); //rounds a float downward
+    	int indexabove = indexbelow + 1;
+    	if (indexabove >= gWavetableLength)
+    		indexabove = 0;
+    	//linear interpolation x(n+f) = (1-f)*x[n] + f*x[n+1]
+    	float fractionAbove = gReadPointer - indexbelow;
+    	float fractionBelow = 1.0 - fractionAbove;
+    	float pos = fractionBelow * currentTable[indexbelow] + fractionAbove * currentTable[indexabove];
+    	
+    	// Calculate output
+        float out = amplitude * pos;
+
+        // Increment read pointer and reset to 0 when end of table is reached
+        gReadPointer += gWavetableLength*gFrequency/context->audioSampleRate;
+        while(gReadPointer >= gWavetableLength) //while instead of if
+            gReadPointer -= gWavetableLength; //dont reset to 0
+    	for(unsigned int channel = 0; channel < context->audioOutChannels; channel++) {
+			// Write the sample to every audio output channel
+    		audioWrite(context, n, channel, out);
+    	}
+    	
+    	// Write the sample to the oscilloscope
+    	gScope.log(out);
+    	analogWriteOnce(context, n/2, 0, outLed);
+	}
+}
+
+void cleanup(BelaContext *context, void *userData)
+{
+
+}
